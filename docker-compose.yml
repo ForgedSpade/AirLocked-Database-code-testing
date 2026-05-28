@@ -1,0 +1,75 @@
+# PolyRoute local stack — app + Postgres (with pgvector) + Redis.
+# Prometheus + Grafana land in phase 9.
+#
+#   docker compose up        — start everything
+#   docker compose up -d     — detached
+#   docker compose logs -f app
+#   docker compose down -v   — wipe volumes too
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: polyroute
+      POSTGRES_PASSWORD: polyroute
+      POSTGRES_DB: polyroute
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U polyroute -d polyroute"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      POLYROUTE_HOST: 0.0.0.0
+      POLYROUTE_PORT: "8000"
+      POLYROUTE_LOG_LEVEL: INFO
+      POLYROUTE_ENVIRONMENT: docker
+      POLYROUTE_DATABASE_URL: postgresql+asyncpg://polyroute:polyroute@postgres:5432/polyroute
+      POLYROUTE_REDIS_URL: redis://redis:6379/0
+      POLYROUTE_ADMIN_TOKEN: ${POLYROUTE_ADMIN_TOKEN:-dev-admin-token-change-me}
+      # Provider keys pass through from the host shell / .env (optional
+      # for phase 1 — only health endpoints run).
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GOOGLE_API_KEY: ${GOOGLE_API_KEY:-}
+    ports:
+      - "8000:8000"
+    # Run migrations then start the API. Alembic is a runtime dep so
+    # it's available inside the .venv on PATH.
+    command:
+      - sh
+      - -c
+      - |
+        alembic upgrade head && \
+        exec uvicorn polyroute.main:app --host 0.0.0.0 --port 8000
+
+volumes:
+  postgres_data:
+  redis_data:
